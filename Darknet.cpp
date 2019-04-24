@@ -524,7 +524,8 @@ void Darknet::load_weights(const char *weight_file)
     at::TensorOptions options= torch::TensorOptions()
         .dtype(torch::kFloat32)
         .is_variable(true);
-    at::Tensor weights = torch::CPU(torch::kFloat32).tensorFromBlob(weights_src, {length/4});
+    //at::Tensor weights = torch::CPU(torch::kFloat32).tensorFromBlob(weights_src, {length/4});
+	at::Tensor weights = torch::from_blob(weights_src, {length/4}).toType(torch::kFloat32);
 
 	for (int i = 0; i < module_list.size(); i++)
 	{
@@ -566,12 +567,16 @@ void Darknet::load_weights(const char *weight_file)
 			bn_bias = bn_bias.view_as(bn_imp->bias);
 			bn_weights = bn_weights.view_as(bn_imp->weight);
 			bn_running_mean = bn_running_mean.view_as(bn_imp->running_mean);
-			bn_running_var = bn_running_var.view_as(bn_imp->running_variance);
+			bn_running_var = bn_running_var.view_as(bn_imp->running_var);
 
-			bn_imp->bias.set_data(bn_bias);
-			bn_imp->weight.set_data(bn_weights);
-			bn_imp->running_mean.set_data(bn_running_mean);
-			bn_imp->running_variance.set_data(bn_running_var);
+			{
+				torch::NoGradGuard guard;
+				bn_imp->bias.copy_(torch::from_blob(bn_bias.data<float>(),bn_bias.sizes()));
+				bn_imp->weight.copy_(torch::from_blob(bn_weights.data<float>(),bn_weights.sizes()));
+				bn_imp->running_mean.copy_(torch::from_blob(bn_running_mean.data<float>(),bn_running_mean.sizes()));
+				bn_imp->running_var.copy_(torch::from_blob(bn_running_var.data<float>(),bn_running_var.sizes()));
+			}
+
 		}
 		else
 		{
@@ -581,7 +586,12 @@ void Darknet::load_weights(const char *weight_file)
 			index_weight += num_conv_biases;
 
 			conv_bias = conv_bias.view_as(conv_imp->bias);
-			conv_imp->bias.set_data(conv_bias);
+			//conv_imp->bias.set_data(conv_bias);
+			{
+				torch::NoGradGuard guard;
+				conv_imp->bias.copy_(torch::from_blob(conv_bias.data<float>(),conv_bias.sizes()));
+
+			}
 		}		
 
 		int num_weights = conv_imp->weight.numel();
@@ -590,7 +600,11 @@ void Darknet::load_weights(const char *weight_file)
 		index_weight += num_weights;	
 
 		conv_weights = conv_weights.view_as(conv_imp->weight);
-		conv_imp->weight.set_data(conv_weights);
+		//conv_imp->weight.set_data(conv_weights);
+		{
+			torch::NoGradGuard guard;
+			conv_imp->weight.copy_(torch::from_blob(conv_weights.data<float>(),conv_weights.sizes()));
+		}
 	}
 }
 
