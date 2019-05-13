@@ -6,6 +6,7 @@
 #include "opencv2/imgproc/imgproc.hpp"
 
 #include "Darknet.h"
+#include "util/util.h"
 
 using namespace std;
 using namespace std::chrono;
@@ -35,9 +36,8 @@ int main(int argc, const char *argv[])
 
     Darknet net("/home/hh/deeplearning_daily/libtorch-yolov3/models/yolov3.cfg", &device);
 
-    map<string, string> *info = net.get_net_info();
-
-    info->operator[]("height") = std::to_string(input_image_size);
+    Block &net_info = net.get_net_info();
+    net_info["height"] = std::to_string(input_image_size);//配置文件里面height可能不是416,这里要再修正一下
 
     std::cout << "loading weight ..." << endl;
     net.load_weights("/home/hh/deeplearning_daily/darknet_src/darknet/yolov3.weights");
@@ -55,8 +55,7 @@ int main(int argc, const char *argv[])
     origin_image = cv::imread("/home/hh/deeplearning_daily/libtorch-yolov3/imgs/dog.jpg");
     //origin_image = cv::imread(argv[1]);
 
-    cv::cvtColor(origin_image, resized_image, cv::COLOR_RGB2BGR);
-    cv::resize(resized_image, resized_image, cv::Size(input_image_size, input_image_size));
+    cv::resize(origin_image, resized_image, cv::Size(input_image_size, input_image_size));
 
     cv::Mat img_float;
     resized_image.convertTo(img_float, CV_32F, 1.0 / 255);
@@ -69,6 +68,7 @@ int main(int argc, const char *argv[])
     auto start = std::chrono::high_resolution_clock::now();
 
     auto output = net.forward(img_var);
+    std::cout<<"output size is:"<<output.sizes()<<std::endl;//1,10647,85
 
     // filter result by NMS
     // class_num = 80
@@ -88,29 +88,44 @@ int main(int argc, const char *argv[])
     }
     else
     {
+        std::cout<<"result size is:\n"<<result.sizes()<<D_END;
+        std::cout<<"result is:\n"<<result<<D_END;
+
+
+
         int obj_num = result.size(0);
 
-        std::cout << obj_num << " objects found" << endl;
+        std::cout << obj_num << " objects found" << D_END;
 
         float w_scale = float(origin_image.cols) / input_image_size;
         float h_scale = float(origin_image.rows) / input_image_size;
 
-        result.select(1, 1).mul_(w_scale);
+
+        std::cout<<"w_scale and h_scale is:\n"<<w_scale<<" ,"<<h_scale<<D_END;
+
+        //二次尺度修正
+        result.select(1, 1).mul_(w_scale);//从416恢复到原始尺度
         result.select(1, 2).mul_(h_scale);
         result.select(1, 3).mul_(w_scale);
         result.select(1, 4).mul_(h_scale);
 
+        std::cout<<"result after scale:\n"<<result<<D_END;
         auto result_data = result.accessor<float, 2>();
+
+        std::cout<<"result_data size is:\n"<<result_data.sizes()<<D_END;
 
         for (int i = 0; i < result.size(0); i++)
         {
             cv::rectangle(origin_image, cv::Point(result_data[i][1], result_data[i][2]), cv::Point(result_data[i][3], result_data[i][4]), cv::Scalar(0, 0, 255), 1, 1, 0);
+
+            // std::cout<<result_data[i][1]<<" ,"<<result_data[i][2]<<" ,"<<result_data[i][3]<<" ,"<<result_data[i][4]<<std::endl;
+            // std::cout<<result[i][1]<<" ,"<<result[i][2]<<" ,"<<result[i][3]<<result[i][4]<<std::endl<<std::endl;
         }
 
         cv::imwrite("out-det.jpg", origin_image);
     }
 
-    std::cout << "Done" << endl;
+    std::cout << "\nDone" << endl;
 
     return 0;
 }

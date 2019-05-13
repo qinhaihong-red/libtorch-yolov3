@@ -1,0 +1,30 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/usr/local/include/opencv4",
+                "/home/hh/open_src/pytorch/pytorch/torch/include",
+                "/usr/local/cuda/include",
+                "/home/hh/open_src/pytorch/pytorch/torch/include/torch/csrc/api/include",
+                "/home/hh/open_src/pytorch/pytorch/aten/src",
+                "/home/hh/open_src/pytorch/pytorch/caffe2/core"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/g++",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-x64",
+            "browse": {"path": [
+                "/home/hh/open_src/pytorch/pytorch/aten/src",
+                "/home/hh/open_src/pytorch/pytorch/caffe2/core",
+                "/home/hh/open_src/pytorch/pytorch/c10/core",
+                "/home/hh/open_src/pytorch/pytorch/c10/cuda",
+                "/home/hh/open_src/pytorch/pytorch/c10/util"
+                
+                ]}
+        }
+    ],
+    "version": 4
+}

@@ -1,0 +1,32 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "(gdb) Launch",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/output/main",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [
+            {"name":"LD_LIBRARY_PATH","value":"/usr/local/lib:/usr/local/cuda/lib64:/home/hh/open_src/pytorch/pytorch/torch/lib:${LD_LIBRARY_PATH}"},
+            {"name":"TORCH","value":"/home/hh/open_src/pytorch/pytorch/torch/lib"},
+            {"name": "CUDA","value": "/usr/local/cuda/lib64"},
+            {"name":"OPENCV","value": "/usr/local/lib"}
+            ],
+            "externalConsole": true,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
+        }
+    ]
+}

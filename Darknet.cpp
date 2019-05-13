@@ -9,382 +9,210 @@
 *******************************************************************************/
 #include "Darknet.h"
 #include <stdio.h>
-#include <iostream>
 #include <typeinfo>
-
-// trim from start (in place)
-static inline void ltrim(std::string &s) {
-    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](int ch) {
-        return !std::isspace(ch);
-    }));
-}
-
-// trim from end (in place)
-static inline void rtrim(std::string &s) {
-    s.erase(std::find_if(s.rbegin(), s.rend(), [](int ch) {
-        return !std::isspace(ch);
-    }).base(), s.end());
-}
-
-// trim from both ends (in place)
-static inline void trim(std::string &s) {
-    ltrim(s);
-    rtrim(s);
-}
-
-static inline int split(const string& str, std::vector<string>& ret_, string sep = ",")
-{
-    if (str.empty())
-    {
-        return 0;
-    }
-
-    string tmp;
-    string::size_type pos_begin = str.find_first_not_of(sep);
-    string::size_type comma_pos = 0;
-
-    while (pos_begin != string::npos)
-    {
-        comma_pos = str.find(sep, pos_begin);
-        if (comma_pos != string::npos)
-        {
-            tmp = str.substr(pos_begin, comma_pos - pos_begin);
-            pos_begin = comma_pos + sep.length();
-        }
-        else
-        {
-            tmp = str.substr(pos_begin);
-            pos_begin = comma_pos;
-        }
-
-        if (!tmp.empty())
-        {
-        	trim(tmp);
-            ret_.push_back(tmp);
-            tmp.clear();
-        }
-    }
-    return 0;
-}
-
-static inline int split(const string& str, std::vector<int>& ret_, string sep = ",")
-{
-	std::vector<string> tmp;
-	split(str, tmp, sep);
-
-	for(int i = 0; i < tmp.size(); i++)
-	{
-		ret_.push_back(std::stoi(tmp[i]));
-	}
-}
-
-// returns the IoU of two bounding boxes 
-static inline torch::Tensor get_bbox_iou(torch::Tensor box1, torch::Tensor box2)
-{
-	// Get the coordinates of bounding boxes
-    torch::Tensor b1_x1, b1_y1, b1_x2, b1_y2; 
-    b1_x1 = box1.select(1, 0);
-    b1_y1 = box1.select(1, 1);
-    b1_x2 = box1.select(1, 2);
-    b1_y2 = box1.select(1, 3);
-    torch::Tensor b2_x1, b2_y1, b2_x2, b2_y2;
-    b2_x1 = box2.select(1, 0);
-    b2_y1 = box2.select(1, 1);
-    b2_x2 = box2.select(1, 2);
-    b2_y2 = box2.select(1, 3);
-    
-    // et the corrdinates of the intersection rectangle
-    torch::Tensor inter_rect_x1 =  torch::max(b1_x1, b2_x1);
-    torch::Tensor inter_rect_y1 =  torch::max(b1_y1, b2_y1);
-    torch::Tensor inter_rect_x2 =  torch::min(b1_x2, b2_x2);
-    torch::Tensor inter_rect_y2 =  torch::min(b1_y2, b2_y2);
-    
-    // Intersection area
-    torch::Tensor inter_area = torch::max(inter_rect_x2 - inter_rect_x1 + 1,torch::zeros(inter_rect_x2.sizes()))*torch::max(inter_rect_y2 - inter_rect_y1 + 1, torch::zeros(inter_rect_x2.sizes()));
-    
-    // Union Area
-    torch::Tensor b1_area = (b1_x2 - b1_x1 + 1)*(b1_y2 - b1_y1 + 1);
-    torch::Tensor b2_area = (b2_x2 - b2_x1 + 1)*(b2_y2 - b2_y1 + 1);
-    
-    torch::Tensor iou = inter_area / (b1_area + b2_area - inter_area);
-    
-    return iou;
-}    
-   
-
-int Darknet::get_int_from_cfg(map<string, string> block, string key, int default_value)
-{
-	if ( block.find(key) != block.end() ) 
-	{
-		return std::stoi(block.at(key));
-	}
-	return default_value;
-}
-
-string Darknet::get_string_from_cfg(map<string, string> block, string key, string default_value)
-{
-	if ( block.find(key) != block.end() ) 
-	{
-		return block.at(key);
-	}
-	return default_value;
-}
-
-torch::nn::Conv2dOptions conv_options(int64_t in_planes, int64_t out_planes, int64_t kerner_size,
-                          int64_t stride, int64_t padding, int64_t groups, bool with_bias=false){
-    torch::nn::Conv2dOptions conv_options = torch::nn::Conv2dOptions(in_planes, out_planes, kerner_size);
-    conv_options.stride_ = stride;
-    conv_options.padding_ = padding;
-    conv_options.groups_ = groups;
-    conv_options.with_bias_ = with_bias;
-    return conv_options;
-}
-
-torch::nn::BatchNormOptions bn_options(int64_t features){
-    torch::nn::BatchNormOptions bn_options = torch::nn::BatchNormOptions(features);
-    bn_options.affine_ = true;
-    bn_options.stateful_ = true;
-    return bn_options;
-}
-
-struct EmptyLayer : torch::nn::Module
-{
-    EmptyLayer(){
-        
-    }
-
-    torch::Tensor forward(torch::Tensor x) {
-        return x; 
-    }
-};
-
-struct UpsampleLayer : torch::nn::Module
-{
-	int _stride;
-    UpsampleLayer(int stride){
-        _stride = stride;
-    }
-
-    torch::Tensor forward(torch::Tensor x) {
-
-    	torch::IntList sizes = x.sizes();
-
-    	int64_t w, h;
-
-    	if (sizes.size() == 4)
-    	{
-    		w = sizes[2] * _stride;
-    		h = sizes[3] * _stride;
-
-			x = torch::upsample_nearest2d(x, {w, h});
-    	}
-    	else if (sizes.size() == 3)
-    	{
-			w = sizes[2] * _stride;
-			x = torch::upsample_nearest1d(x, {w});
-    	}   	
-        return x; 
-    }
-};
-
-struct MaxPoolLayer2D : torch::nn::Module
-{
-	int _kernel_size;
-	int _stride;
-    MaxPoolLayer2D(int kernel_size, int stride){
-        _kernel_size = kernel_size;
-        _stride = stride;
-    }
-
-    torch::Tensor forward(torch::Tensor x) {	
-    	if (_stride != 1)
-    	{
-    		x = torch::max_pool2d(x, {_kernel_size, _kernel_size}, {_stride, _stride});
-    	}
-    	else
-    	{
-    		int pad = _kernel_size - 1;
-
-       		torch::Tensor padded_x = torch::replication_pad2d(x, {0, pad, 0, pad});
-    		x = torch::max_pool2d(padded_x, {_kernel_size, _kernel_size}, {_stride, _stride});
-    	}       
-
-        return x;
-    }
-};
-
-struct DetectionLayer : torch::nn::Module
-{
-	vector<float> _anchors;
-
-    DetectionLayer(vector<float> anchors)
-    {
-        _anchors = anchors;
-    }
-    
-    torch::Tensor forward(torch::Tensor prediction, int inp_dim, int num_classes, torch::Device device)
-    {
-    	return predict_transform(prediction, inp_dim, _anchors, num_classes, device);
-    }
-
-    torch::Tensor predict_transform(torch::Tensor prediction, int inp_dim, vector<float> anchors, int num_classes, torch::Device device)
-    {
-    	int batch_size = prediction.size(0);
-    	int stride = floor(inp_dim / prediction.size(2));
-    	int grid_size = floor(inp_dim / stride);
-    	int bbox_attrs = 5 + num_classes;
-    	int num_anchors = anchors.size()/2;
-
-    	for (int i = 0; i < anchors.size(); i++)
-    	{
-    		anchors[i] = anchors[i]/stride;
-    	}
-    	torch::Tensor result = prediction.view({batch_size, bbox_attrs * num_anchors, grid_size * grid_size});
-    	result = result.transpose(1,2).contiguous();
-    	result = result.view({batch_size, grid_size*grid_size*num_anchors, bbox_attrs});
-    	
-    	result.select(2, 0).sigmoid_();
-        result.select(2, 1).sigmoid_();
-        result.select(2, 4).sigmoid_();
-
-        auto grid_len = torch::arange(grid_size);
-
-        std::vector<torch::Tensor> args = torch::meshgrid({grid_len, grid_len});
-
-        torch::Tensor x_offset = args[1].contiguous().view({-1, 1});
-        torch::Tensor y_offset = args[0].contiguous().view({-1, 1});
-
-        // std::cout << "x_offset:" << x_offset << endl;
-        // std::cout << "y_offset:" << y_offset << endl;
-
-        x_offset = x_offset.to(device);
-        y_offset = y_offset.to(device);
-
-        auto x_y_offset = torch::cat({x_offset, y_offset}, 1).repeat({1, num_anchors}).view({-1, 2}).unsqueeze(0);
-        result.slice(2, 0, 2).add_(x_y_offset);
-
-        torch::Tensor anchors_tensor = torch::from_blob(anchors.data(), {num_anchors, 2});
-        //if (device != nullptr)
-        	anchors_tensor = anchors_tensor.to(device);
-        anchors_tensor = anchors_tensor.repeat({grid_size*grid_size, 1}).unsqueeze(0);
-
-        result.slice(2, 2, 4).exp_().mul_(anchors_tensor);
-        result.slice(2, 5, 5 + num_classes).sigmoid_();
-   		result.slice(2, 0, 4).mul_(stride);
-
-    	return result;
-    }
-};
-
+#include "util/util.h"
+#include <exception>
+#include <stdexcept>
+#include "util/cv_helper.h"
+#include<fstream>
+#include<algorithm>
 
 //---------------------------------------------------------------------------
 // Darknet
 //---------------------------------------------------------------------------
-Darknet::Darknet(const char *cfg_file, torch::Device *device) {
+Darknet::Darknet(const char *cfg_file, torch::Device *device) : _device(device)
+{
 
 	load_cfg(cfg_file);
-
-	_device = device;
-
 	create_modules();
 }
 
 void Darknet::load_cfg(const char *cfg_file)
 {
-	ifstream fs(cfg_file);
-	string line;
- 
-	if(!fs) 
+	std::ifstream fs(cfg_file);
+	if (!fs)
 	{
-		std::cout << "Fail to load cfg file:" << cfg_file << endl;
+		std::cout << "Fail to load cfg file:" << cfg_file << std::endl;
 		return;
 	}
 
-	while (getline (fs, line))
-	{ 
-		trim(line);
+	std::string line;
+	while (std::getline(fs, line))
+	{
+		std::string out;
+		trim(line, out);
+		line = std::move(out);
 
-		if (line.empty())
-		{
+		if (line.empty() || line.front() == '#')
 			continue;
-		}		
 
-		if ( line.substr (0,1)  == "[")
+		if (line.front() == '[')
 		{
-			map<string, string> block;			
-
-			string key = line.substr(1, line.length() -2);
-			block["type"] = key;  
-
-			blocks.push_back(block);
+			Block block;
+			std::string type = line.substr(1, line.length() - 2);
+			block["type"] = type;
+			_blocks.push_back(std::move(block));
 		}
 		else
 		{
-			map<string, string> *block = &blocks[blocks.size() -1];
-
-			vector<string> op_info;
-
-			split(line, op_info, "=");
-
-			if (op_info.size() == 2)
+			std::vector<std::string> block_info;
+			split(line, block_info, '=');
+			if (block_info.size() == 2)
 			{
-				string p_key = op_info[0];
-				string p_value = op_info[1];
-				block->operator[](p_key) = p_value;
-			}			
-		}				
+				_blocks.back()[block_info[0]] = block_info[1];
+			}
+		}
 	}
 	fs.close();
 }
 
+int Darknet::get_int_from_cfg(Block &block, const std::string &key, int default_value)
+{
+
+	if (block.find(key) != block.end())
+		return std::stoi(block.at(key));
+
+	return default_value;
+}
+
+std::string Darknet::get_str_from_cfg(Block &block, const std::string &key, const std::string &default_value)
+{
+	if (block.find(key) != block.end())
+		return block.at(key);
+
+	return default_value;
+}
+
+Block &Darknet::get_net_info()
+{
+	if (_blocks.size() > 0)
+		return _blocks[0];
+	throw std::runtime_error("Darknet has not initiated or load cfg failure.");
+}
+
+/*
+darknet模块结构：
+1.共有75个conv层，其中kernel=1或3 ; stride=1或2； padding始终为1;
+2.75个conv层，其中5个用于downsample，这5个conv的kernel=3,stride为2，最终下采样尺寸为2^5=32；其他conv的stride都是1
+3.共有23个shortcut,都是：from=-3,activition=linear
+4.共有3个yolo，4个route，2个upsample：
+	yolo1(mask=6,7,8)->route(-4)->conv(k=1,out_channels=256)->upsample(stride=2)->route(-1,61)
+	yolo2(mask=3,4,5)->route(-4)->conv(k=1,out_channels=128)->upsample(stride=2)->route(-1,36)
+	ylol3(mask=0,1,2)
+
+
+*/
+
 void Darknet::create_modules()
 {
-	int prev_filters = 3;
+	int input_channels = 3;
+	int output_channels = 0;
+	std::vector<int> output_channels_rec;
 
-	std::vector<int> output_filters;
-
-	int index = 0;
-
-	int filters = 0;
-
-	for (int i = 0, len = blocks.size(); i < len; i++)
+	std::cout << "begin create modules\n\n";
+	//从1开始迭代，排除net block
+	for (int i = 1, len = _blocks.size(); i < len; ++i)
 	{
-		map<string, string> block = blocks[i];
-
-		string layer_type = block["type"];
-
-		// std::cout << index << "--" << layer_type << endl;
+		Block &block = _blocks[i];
+		std::string layer_type = block["type"];
 
 		torch::nn::Sequential module;
-
-		if (layer_type == "net")
-			continue;
-
 		if (layer_type == "convolutional")
 		{
-			string activation = get_string_from_cfg(block, "activation", "");
+			std::string activation = get_str_from_cfg(block, "activation", "");
 			int batch_normalize = get_int_from_cfg(block, "batch_normalize", 0);
-			filters = get_int_from_cfg(block, "filters", 0);
+			output_channels = get_int_from_cfg(block, "filters", 0);
 			int padding = get_int_from_cfg(block, "pad", 0);
 			int kernel_size = get_int_from_cfg(block, "size", 0);
 			int stride = get_int_from_cfg(block, "stride", 1);
 
-			int pad = padding > 0?  (kernel_size -1)/2: 0;
-			bool with_bias = batch_normalize > 0? false : true;
+			//在配置文件中，尽管所有的pad都是1，但是对于kernel_sz=1的情况，
+			//pad=1是不合适的，需要置0.
+			int pad = padding > 0 ? (kernel_size - 1) / 2 : 0;
+			bool with_bias = batch_normalize > 0 ? false : true;
 
-			torch::nn::Conv2d conv = torch::nn::Conv2d(conv_options(prev_filters, filters, kernel_size, stride, pad, 1, with_bias));
+			torch::nn::Conv2d conv = torch::nn::Conv2d(get_conv_options(input_channels, output_channels, kernel_size, stride, pad, 1, with_bias));
 			module->push_back(conv);
 
 			if (batch_normalize > 0)
 			{
-				torch::nn::BatchNorm bn = torch::nn::BatchNorm(bn_options(filters));
-                module->push_back(bn);
+				torch::nn::BatchNorm bn = torch::nn::BatchNorm(get_bn_options(output_channels));
+				module->push_back(bn);
 			}
 
 			if (activation == "leaky")
 			{
 				module->push_back(torch::nn::Functional(torch::leaky_relu, /*slope=*/0.1));
-			}			
+			}
+		}
+		else if (layer_type == "shortcut")
+		{
+			// skip connection
+			int from = get_int_from_cfg(block, "from", 0);
+			block["from"] = std::to_string(from);
+
+			// placeholder
+			EmptyLayer layer;
+			module->push_back(layer);
+		}
+		else if (layer_type == "yolo")
+		{
+			std::string mask_info = get_str_from_cfg(block, "mask", "");
+			std::vector<int> masks;
+			split(mask_info, masks, ',');
+
+			std::string anchor_info = get_str_from_cfg(block, "anchors", "");
+			std::vector<int> anchors;
+			split(anchor_info, anchors, ',');
+
+			std::vector<float> anchor_points;
+			for (int j = 0; j < masks.size(); ++j)
+			{
+				anchor_points.push_back(anchors[masks[j] * 2]);
+				anchor_points.push_back(anchors[masks[j] * 2 + 1]);
+			}
+
+			DetectionLayer layer(anchor_points,_device);
+			module->push_back(layer);
+
+			std::cout << "******create yolo********\n\n";
+		}
+		else if (layer_type == "route")
+		{
+			/* route可能是维度相加：
+			route1(-4,0) :在第84层，output_c_83 = output_c_79 = 512
+			route2(-1,61):在第87层，output_c_86 = output_c_85 + output_c_61 = 768
+			route3(-4,0) :在第96层，output_c_95 = output_c_91 = 256
+			route4(-1,36):在第99层，output_c_98 = output_c_97 + output_c_36 = 384
+				
+			*/
+			std::string layers_info = get_str_from_cfg(block, "layers", "");
+
+			std::vector<std::string> layers;
+			split(layers_info, layers, ',');
+
+			int start = std::stoi(layers[0]);
+			int end = 0;
+
+			if (layers.size() > 1)
+				end = std::stoi(layers[1]);
+
+			//把start 和 end 用正序表示
+			if (start < 0)
+				start = start + i - 1;
+			if (end < 0)
+				end = end + i - 1;
+
+			block["start"] = std::to_string(start);
+			block["end"] = std::to_string(end);
+
+			output_channels = output_channels_rec[start];
+			if (end > 0)
+				output_channels += output_channels_rec[end];
+
+			// placeholder
+			EmptyLayer layer;
+			module->push_back(layer);
 		}
 		else if (layer_type == "upsample")
 		{
@@ -393,168 +221,89 @@ void Darknet::create_modules()
 			UpsampleLayer uplayer(stride);
 			module->push_back(uplayer);
 		}
-		else if (layer_type == "maxpool")
-		{
-			int stride = get_int_from_cfg(block, "stride", 1);
-			int size = get_int_from_cfg(block, "size", 1);
-
-			MaxPoolLayer2D poolLayer(size, stride);
-			module->push_back(poolLayer);
-		}
-		else if (layer_type == "shortcut")
-		{
-			// skip connection
-			int from = get_int_from_cfg(block, "from", 0);
-			block["from"] = std::to_string(from);
-
-			blocks[i] = block;
-
-			// placeholder
-			EmptyLayer layer;
-			module->push_back(layer);
-		}
-		else if (layer_type == "route")
-		{
-			// L 85: -1, 61
-			string layers_info = get_string_from_cfg(block, "layers", "");
-
-			std::vector<string> layers;
-			split(layers_info, layers, ",");
-
-			std::string::size_type sz; 
-			signed int start = std::stoi(layers[0], &sz);
-			signed int end = 0;
-
-			if (layers.size() > 1)
-			{
-				end = std::stoi(layers[1], &sz);
-			}
-
-			if (start > 0)	start = start - index;
-
-			if (end > 0) end = end - index;
-
-			block["start"] = std::to_string(start);
-			block["end"] = std::to_string(end);
-
-			blocks[i] = block;
-
-			// placeholder
-			EmptyLayer layer;
-			module->push_back(layer);
-
-			if (end < 0)
-			{
-				filters = output_filters[index + start] + output_filters[index + end];
-			}
-			else
-			{
-				filters = output_filters[index + start];
-			}
-		}
-		else if (layer_type == "yolo")
-		{
-			string mask_info = get_string_from_cfg(block, "mask", "");
-			std::vector<int> masks;
-			split(mask_info, masks, ",");
-
-			string anchor_info = get_string_from_cfg(block, "anchors", "");
-			std::vector<int> anchors;
-			split(anchor_info, anchors, ",");
-
-			std::vector<float> anchor_points;
-			int pos;
-			for (int i = 0; i< masks.size(); i++)
-			{
-				pos = masks[i];
-				anchor_points.push_back(anchors[pos * 2]);
-				anchor_points.push_back(anchors[pos * 2+1]);
-			}
-
-			DetectionLayer layer(anchor_points);
-			module->push_back(layer);
-		}
 		else
 		{
-			cout << "unsupported operator:" << layer_type << endl;
+			std::cout << "unsupported operator:" << layer_type << std::endl;
 		}
 
-		prev_filters = filters;
-        output_filters.push_back(filters);
-        module_list.push_back(module);
+		//只有conv和route会改变output_channels
+		input_channels = output_channels;
+		output_channels_rec.push_back(output_channels);
+		_modules.push_back(module);
 
-        char *module_key = new char[strlen("layer_") + sizeof(index) + 1];
+		char _key[50] = {0};
+		sprintf(_key, "%s%d", "layer_", i - 1);
 
-        sprintf(module_key, "%s%d", "layer_", index);
+		//std::cout << "create module:" << std::string(_key) << "\n\n";
 
-        register_module(module_key, module);
-
-        index += 1;
+		register_module(std::string(_key), module);
 	}
+
+	//std::cout << "end create modules\n\n";
 }
 
-map<string, string>* Darknet::get_net_info()
-{
-	if (blocks.size() > 0)
-	{
-		return &blocks[0];
-	}
-}
-
+// #The first 4 values are header information 
+// # 1. Major version number
+// # 2. Minor Version Number
+// # 3. Subversion number 
+// # 4. IMages seen 
 void Darknet::load_weights(const char *weight_file)
 {
-	ifstream fs(weight_file, ios::binary);
+	std::ifstream fs(weight_file, std::ios::binary);
+	if(!fs){throw std::runtime_error("weight file not exists.");};
 
 	// header info: 5 * int32_t
-	int32_t header_size = sizeof(int32_t)*5;
+	int32_t header_size = sizeof(int32_t) * 5;
 
 	int64_t index_weight = 0;
 
-	fs.seekg (0, fs.end);
-    int64_t length = fs.tellg();
-    // skip header
-    length = length - header_size;
+	fs.seekg(0, fs.end);
+	int64_t length = fs.tellg();
+	// skip header
+	length = length - header_size;
 
-    fs.seekg (header_size, fs.beg);
-    float *weights_src = (float *)malloc(length);
-    fs.read(reinterpret_cast<char*>(weights_src), length);
+	fs.seekg(header_size, fs.beg);
+	void *weights_src = malloc(length);
+	fs.read((char *)weights_src, length);
+	fs.close();
 
-    fs.close();
+	//把权重的内容，通过from_blob写入到Tensor中.
+	//注意到传入的deleter，在weights析构时，会释放内存.
+	at::Tensor weights = torch::from_blob(weights_src, {length}, [](void *src) { free(src); }).toType(torch::kFloat32);
 
-    at::TensorOptions options= torch::TensorOptions()
-        .dtype(torch::kFloat32)
-        .is_variable(true);
-    //at::Tensor weights = torch::CPU(torch::kFloat32).tensorFromBlob(weights_src, {length/4});
-	at::Tensor weights = torch::from_blob(weights_src, {length/4}).toType(torch::kFloat32);
-
-	for (int i = 0; i < module_list.size(); i++)
+	for (int i = 0; i < _modules.size(); i++)
 	{
-		map<string, string> module_info = blocks[i + 1];
-
-		string module_type = module_info["type"];
+		Block &block = _blocks[i + 1]; //block下标从i+1开始
+		std::string module_type = block["type"];
 
 		// only conv layer need to load weight
-		if (module_type != "convolutional")	continue;
-		
-		torch::nn::Sequential seq_module = module_list[i];
+		if (module_type != "convolutional")
+			continue;
 
-		auto conv_module = seq_module.ptr()->ptr(0);
-		torch::nn::Conv2dImpl *conv_imp = dynamic_cast<torch::nn::Conv2dImpl *>(conv_module.get());
+		torch::nn::Sequential module = _modules[i];
 
-		int batch_normalize = get_int_from_cfg(module_info, "batch_normalize", 0);
+		auto conv_module = module.ptr()->ptr(0);													//通过ptr(index)的方式取得子模块，属于sequential独有的
+		torch::nn::Conv2dImpl *conv_imp = dynamic_cast<torch::nn::Conv2dImpl *>(conv_module.get()); //通过dynamic_cast把基类转型到子类
+
+		int batch_normalize = get_int_from_cfg(block, "batch_normalize", 0);
 
 		if (batch_normalize > 0)
 		{
 			// second module
-			auto bn_module = seq_module.ptr()->ptr(1);
+			auto bn_module = module.ptr()->ptr(1);
 
 			torch::nn::BatchNormImpl *bn_imp = dynamic_cast<torch::nn::BatchNormImpl *>(bn_module.get());
 
+			int num_bn_weights = bn_imp->weight.numel();
 			int num_bn_biases = bn_imp->bias.numel();
+			int num_bn_running_mean = bn_imp->running_mean.numel();
+			int num_bn_running_var = bn_imp->running_var.numel();
+
+			//上面的四个num_xx的值都一样，所以，下面统一用num_bn_biases作为指针移动
 
 			at::Tensor bn_bias = weights.slice(0, index_weight, index_weight + num_bn_biases);
 			index_weight += num_bn_biases;
-	
+
 			at::Tensor bn_weights = weights.slice(0, index_weight, index_weight + num_bn_biases);
 			index_weight += num_bn_biases;
 
@@ -571,106 +320,132 @@ void Darknet::load_weights(const char *weight_file)
 
 			{
 				torch::NoGradGuard guard;
-				bn_imp->bias.copy_(torch::from_blob(bn_bias.data<float>(),bn_bias.sizes()));
-				bn_imp->weight.copy_(torch::from_blob(bn_weights.data<float>(),bn_weights.sizes()));
-				bn_imp->running_mean.copy_(torch::from_blob(bn_running_mean.data<float>(),bn_running_mean.sizes()));
-				bn_imp->running_var.copy_(torch::from_blob(bn_running_var.data<float>(),bn_running_var.sizes()));
+				bn_imp->bias.copy_(bn_bias);
+				bn_imp->weight.copy_(bn_weights);
+				bn_imp->running_mean.copy_(bn_running_mean);
+				bn_imp->running_var.copy_(bn_running_var);
 			}
-
 		}
 		else
 		{
+			//不使用batch_norm的时候，conv才有bias
+
 			int num_conv_biases = conv_imp->bias.numel();
 
 			at::Tensor conv_bias = weights.slice(0, index_weight, index_weight + num_conv_biases);
 			index_weight += num_conv_biases;
 
 			conv_bias = conv_bias.view_as(conv_imp->bias);
-			//conv_imp->bias.set_data(conv_bias);
 			{
 				torch::NoGradGuard guard;
-				conv_imp->bias.copy_(torch::from_blob(conv_bias.data<float>(),conv_bias.sizes()));
-
+				conv_imp->bias.copy_(conv_bias);
 			}
-		}		
+		}
 
-		int num_weights = conv_imp->weight.numel();
-	
-		at::Tensor conv_weights = weights.slice(0, index_weight, index_weight + num_weights);
-		index_weight += num_weights;	
+		int num_cov_weights = conv_imp->weight.numel();
+
+		at::Tensor conv_weights = weights.slice(0, index_weight, index_weight + num_cov_weights);
+		index_weight += num_cov_weights;
 
 		conv_weights = conv_weights.view_as(conv_imp->weight);
-		//conv_imp->weight.set_data(conv_weights);
+
 		{
 			torch::NoGradGuard guard;
-			conv_imp->weight.copy_(torch::from_blob(conv_weights.data<float>(),conv_weights.sizes()));
+			//即使有nograd guard，这个set_data也不行
+			//conv_imp->weight.set_data(conv_weights);
+			//如果不加guard，只使用copy_，会报出：a leaf Variable that requires grad has been used in an in-place operation 的错误.
+			conv_imp->weight.copy_(conv_weights);
+
 		}
 	}
 }
 
-torch::Tensor Darknet::forward(torch::Tensor x) 
+torch::Tensor Darknet::forward(torch::Tensor x)
 {
-	int module_count = module_list.size();
+	int num_modules = _modules.size();
 
-	std::vector<torch::Tensor> outputs(module_count);
+	std::vector<torch::Tensor> outputs(num_modules);
 
 	torch::Tensor result;
 	int write = 0;
 
-	for (int i = 0; i < module_count; i++)
+	for (int i = 0; i < num_modules; ++i)
 	{
-		map<string, string> block = blocks[i+1];
-
-		string layer_type = block["type"];
+		Block &block = _blocks[i + 1];
+		std::string layer_type = block["type"];
 
 		if (layer_type == "net")
 			continue;
 
-		if (layer_type == "convolutional" || layer_type == "upsample" || layer_type == "maxpool")
+		if (layer_type == "convolutional" || layer_type == "upsample")
 		{
-			torch::nn::SequentialImpl *seq_imp = dynamic_cast<torch::nn::SequentialImpl *>(module_list[i].ptr().get());
-			
-			x = seq_imp->forward(x);
+
+			//auto pre_sz = x.sizes();
+			//std::cout<<"pre_sz is:\n"<<pre_sz<<"\n\n";
+			x = _modules[i]->forward(x);
 			outputs[i] = x;
+
+			//dbg-info
+			// if (layer_type == "upsample")
+			// {
+			// 	static int u = 0;
+			// 	std::cout << "upsample_" << u++ << "@layer_" << i << ":\ninput_sz:" << pre_sz << ", output_sz:" << x.sizes() << "\n\n";
+			// }
+			// else
+			// {
+
+			// 	std::string activation = get_str_from_cfg(block, "activation", "");
+			// 	int batch_normalize = get_int_from_cfg(block, "batch_normalize", 0);
+			// 	int padding = get_int_from_cfg(block, "pad", 0);
+			// 	int kernel_size = get_int_from_cfg(block, "size", 0);
+			// 	int stride = get_int_from_cfg(block, "stride", 1);
+
+			// 	char str[100] = {0};
+			// 	sprintf(str, "(bn=%d,kernel_sz=%d,stride=%d,activation=%s)", batch_normalize, kernel_size, stride,activation.c_str());
+
+			// 	static int c = 0;
+			// 	std::cout << "conv_" << c++ << std::string(str) << "@layer_" << i << ":\ninput_sz:" << pre_sz << ", output_sz:" << x.sizes() << "\n\n";
+			// }
 		}
 		else if (layer_type == "route")
 		{
 			int start = std::stoi(block["start"]);
 			int end = std::stoi(block["end"]);
 
-			if (start > 0) start = start - i;
+			if (start < 0 || end < 0)
+				throw std::out_of_range("start or end index out of range!");
 
-			if (end == 0)
-			{
-				x = outputs[i + start];
-			}
-			else
-			{
-				if (end > 0) end = end - i;
-
-				torch::Tensor map_1 = outputs[i + start];
-				torch::Tensor map_2 = outputs[i + end];
-
-				x = torch::cat({map_1, map_2}, 1);
-			}
+			x = outputs[start];
+			if (end > 0)
+				x = torch::cat({x, outputs[end]}, 1); //route把之前某些层的输出，进行维度相加，作为本层的输出
 
 			outputs[i] = x;
+
+			//dbg-info
+			// static int r = 0;
+			// std::cout << "route_" << r++ << "(" << start << "," << end << ")@layer_" << i << ":\noutput_sz:" << x.sizes() << "\n\n";
 		}
 		else if (layer_type == "shortcut")
 		{
+			//所有from，全部是-3
 			int from = std::stoi(block["from"]);
-			x = outputs[i-1] + outputs[i+from];
-            outputs[i] = x;
+			//auto pre_sz = x.sizes();
+			x = outputs[i - 1] + outputs[i + from]; //short_cut必然是矩阵相加
+			outputs[i] = x;
+
+			//dbg-info
+			// static int s = 0;
+			// std::cout << "shortcut_" << s++ << "@layer_" << i << ":\ninput_sz:" << pre_sz << ", output_sz:" << x.sizes() << "\n\n";
 		}
 		else if (layer_type == "yolo")
 		{
-			torch::nn::SequentialImpl *seq_imp = dynamic_cast<torch::nn::SequentialImpl *>(module_list[i].ptr().get());
-
-			map<string, string> net_info = blocks[0];
-			int inp_dim = get_int_from_cfg(net_info, "height", 0);
+			Block &net_info = _blocks[0]; //net_info中的height，已经在main中进行了修正，改为416了
+			int input_dim = get_int_from_cfg(net_info, "height", 0);
 			int num_classes = get_int_from_cfg(block, "classes", 0);
 
-			x = seq_imp->forward(x, inp_dim, num_classes, *_device);
+			//auto pre_sz = x.sizes();
+
+			x = _modules[i]->forward(x, input_dim, num_classes);
 
 			if (write == 0)
 			{
@@ -679,143 +454,112 @@ torch::Tensor Darknet::forward(torch::Tensor x)
 			}
 			else
 			{
-				result = torch::cat({result,x}, 1);
+				result = torch::cat({result, x}, 1); //逐一把3个yolo的输出，在维度上进行叠加
 			}
 
-			outputs[i] = outputs[i-1];
+			//yolo层的ouput,后面的各层都不会用到： 首先route不会用到，而且后面也没有short_cut层.
+			//因此仅仅是为了占位.
+			outputs[i] = x;
+
+			//dbg-info
+			// static int v = 0;
+			// std::cout << "yolo_" << v++ << "@layer_" << i << ":\ninput_sz:" << pre_sz << ", output_sz:" << x.sizes() << "\n";
+			// std::cout << "result_sz:" << result.sizes() << "\n\n";
 		}
 	}
 	return result;
 }
 
+
 torch::Tensor Darknet::write_results(torch::Tensor prediction, int num_classes, float confidence, float nms_conf)
 {
+	//std::ofstream log("write_results3.txt",std::ios::trunc);
+
 	// get result which object confidence > threshold
-	auto conf_mask = (prediction.select(2,4) > confidence).to(torch::kFloat32).unsqueeze(2);
-	
-	prediction.mul_(conf_mask);
-	auto ind_nz = torch::nonzero(prediction.select(2, 4)).transpose(0, 1).contiguous();	
+	auto conf_mask = (prediction.select(2, 4) > confidence);//1,10647
+	if(conf_mask.sum().item<int>()==0) return torch::zeros({0});
+	conf_mask=conf_mask.to(torch::kFloat32).unsqueeze(2);//1,10647,1
+	prediction.mul_(conf_mask);//1,10647,85
+	auto non_zero_index = torch::nonzero(prediction.select(2,4)).squeeze();//过滤 0 confidence的行
+	prediction = prediction.index_select(1,non_zero_index.select(1,1).squeeze());//1,n,85
 
-	if (ind_nz.size(0) == 0) 
-	{
-        return torch::zeros({0});
-    }
 
-	torch::Tensor box_a = torch::ones(prediction.sizes(), prediction.options());
+	//预测坐标变换：把【中心x,中心y，宽，高】转换为【左上，右下】模式
 	// top left x = centerX - w/2
+	torch::Tensor box_a = torch::ones_like(prediction);
 	box_a.select(2, 0) = prediction.select(2, 0) - prediction.select(2, 2).div(2);
 	box_a.select(2, 1) = prediction.select(2, 1) - prediction.select(2, 3).div(2);
 	box_a.select(2, 2) = prediction.select(2, 0) + prediction.select(2, 2).div(2);
 	box_a.select(2, 3) = prediction.select(2, 1) + prediction.select(2, 3).div(2);
+	prediction.slice(2, 0, 4) = box_a.slice(2, 0, 4);
 
-    prediction.slice(2, 0, 4) = box_a.slice(2, 0, 4);
+	int batch_size = prediction.size(0);
+	int item_attr_size = 5;
+	bool write = false;
+	int num = 0;
+	torch::Tensor output = torch::zeros({0});
 
-    int batch_size = prediction.size(0);
-    int item_attr_size = 5;
+	for (int i = 0; i < batch_size; i++)
+	{
+		auto image_prediction = prediction[i];//n,85
+		// get the max classes score and index at each result
+		std::tuple<torch::Tensor, torch::Tensor> max_classes = torch::max(image_prediction.slice(1, item_attr_size, item_attr_size + num_classes), 1);
+		auto max_conf = std::get<0>(max_classes);//n
+		auto max_conf_index = std::get<1>(max_classes);//n
+		max_conf = max_conf.to(torch::kFloat32).unsqueeze(1);//n,1
+		max_conf_index = max_conf_index.to(torch::kFloat32).unsqueeze(1);//n,1	
+		// shape: n * 7 . (left x, left y, right x, right y, object confidence, class_score, class_id)
+		image_prediction = torch::cat({image_prediction.slice(1, 0, 5), max_conf, max_conf_index}, 1).reshape({-1,7}).cpu();//n,7
+		
 
-    torch::Tensor output = torch::ones({1, prediction.size(2) + 1});
-    bool write = false;
+		//to unqiue class_id:过滤重复的 class id
+		auto class_id = image_prediction.select(1,6).contiguous();
+		std::vector<float> vec_class_id (class_id.data<float>(),class_id.data<float>()+class_id.numel());//n,
+		std::vector<float> unqiue_class_id;
+		std::sort(std::begin(vec_class_id),std::end(vec_class_id));
+		std::unique_copy(std::begin(vec_class_id),std::end(vec_class_id),std::back_inserter(unqiue_class_id));
+		
+		for (auto cls_id:unqiue_class_id)
+		{
+			auto cls_mask = image_prediction * (image_prediction.select(1, 6) == cls_id).to(torch::kFloat32).unsqueeze(1);
+			auto class_mask_index = torch::nonzero(cls_mask.select(1, 5)).squeeze();
+			auto image_pred_class = image_prediction.index_select(0, class_mask_index).view({-1, 7});
+			std::tuple<torch::Tensor, torch::Tensor> sort_ret = torch::sort(image_pred_class.select(1, 4));//ascending sort
+			auto conf_sort_index = std::get<1>(sort_ret);
+			image_pred_class = image_pred_class.index_select(0, conf_sort_index.squeeze()).cpu();//c,7
 
-    int num = 0;
+			for (int j = 0; j < image_pred_class.size(0) - 1; ++j)
+			{
+				int max_conf_id = image_pred_class.size(0) - 1 - j;//_c
 
-    for (int i = 0; i < batch_size; i++)
-    {
-    	auto image_prediction = prediction[i];
+				if (max_conf_id <= 0)break;
 
-    	// get the max classes score at each result
-    	std::tuple<torch::Tensor, torch::Tensor> max_classes = torch::max(image_prediction.slice(1, item_attr_size, item_attr_size + num_classes), 1);
+				auto ious = get_bbox_iou(image_pred_class[max_conf_id].unsqueeze(0), image_pred_class.slice(0, 0, max_conf_id));//_c,
+				//筛选
+				auto iou_mask = (ious < nms_conf).to(torch::kFloat32).unsqueeze(1);//_c,1
+				image_pred_class.slice(0, 0, max_conf_id) = image_pred_class.slice(0, 0, max_conf_id) * iou_mask;
+				auto non_zero_index = torch::nonzero(image_pred_class.select(1, 4)).squeeze();//__c, non_zero_index中包括max_conf_id
+				image_pred_class = image_pred_class.index_select(0, non_zero_index).view({-1, 7});//__c, 7
+			}
 
-    	// class score
-    	auto max_conf = std::get<0>(max_classes);
-    	// index
-    	auto max_conf_score = std::get<1>(max_classes);
-    	max_conf = max_conf.to(torch::kFloat32).unsqueeze(1);
-    	max_conf_score = max_conf_score.to(torch::kFloat32).unsqueeze(1);
+			torch::Tensor batch_index = torch::ones({image_pred_class.size(0), 1}).fill_(i);//增加一个批的维度
 
-    	// shape: n * 7, left x, left y, right x, right y, object confidence, class_score, class_id
-    	image_prediction = torch::cat({image_prediction.slice(1, 0, 5), max_conf, max_conf_score}, 1);
-    	
-    	// remove item which object confidence == 0
-        auto non_zero_index =  torch::nonzero(image_prediction.select(1,4));
-        auto image_prediction_data = image_prediction.index_select(0, non_zero_index.squeeze()).view({-1, 7});
+			if (!write)
+			{
+				output = torch::cat({batch_index, image_pred_class}, 1);//batch_num,class_num,8
+				write = true;
+			}
+			else
+			{
+				auto out = torch::cat({batch_index, image_pred_class}, 1);
+				output = torch::cat({output, out}, 0);//batch_num,class_num,8
+			}
 
-        // get unique classes 
-        std::vector<torch::Tensor> img_classes;
+			++num;
+		}//class_loop
+	}//batch_loop
 
-	    for (int m = 0, len = image_prediction_data.size(0); m < len; m++) 
-	    {
-	    	bool found = false;	        
-	        for (int n = 0; n < img_classes.size(); n++)
-	        {
-	        	auto ret = (image_prediction_data[m][6] == img_classes[n]);
-	        	if (torch::nonzero(ret).size(0) > 0)
-	        	{
-	        		found = true;
-	        		break;
-	        	}
-	        }
-	        if (!found) img_classes.push_back(image_prediction_data[m][6]);
-	    }
+	if (num == 0) return torch::zeros({0});
 
-        for (int k = 0; k < img_classes.size(); k++)
-        {
-        	auto cls = img_classes[k];
-
-        	auto cls_mask = image_prediction_data * (image_prediction_data.select(1, 6) == cls).to(torch::kFloat32).unsqueeze(1);
-        	auto class_mask_index =  torch::nonzero(cls_mask.select(1, 5)).squeeze();
-
-        	auto image_pred_class = image_prediction_data.index_select(0, class_mask_index).view({-1,7});
-        	// ascend by confidence
-        	// seems that inverse method not work
-        	std::tuple<torch::Tensor,torch::Tensor> sort_ret = torch::sort(image_pred_class.select(1,4));
-
-        	auto conf_sort_index = std::get<1>(sort_ret);
-        	
-        	// seems that there is something wrong with inverse method
-        	// conf_sort_index = conf_sort_index.inverse();
-
-        	image_pred_class = image_pred_class.index_select(0, conf_sort_index.squeeze()).cpu();
-
-           	for(int w = 0; w < image_pred_class.size(0)-1; w++)
-        	{
-        		int mi = image_pred_class.size(0) - 1 - w;
-
-        		if (mi <= 0)
-        		{
-        			break;
-        		}
-
-        		auto ious = get_bbox_iou(image_pred_class[mi].unsqueeze(0), image_pred_class.slice(0, 0, mi));
-
-        		auto iou_mask = (ious < nms_conf).to(torch::kFloat32).unsqueeze(1);
-        		image_pred_class.slice(0, 0, mi) = image_pred_class.slice(0, 0, mi) * iou_mask;
-
-        		// remove from list
-        		auto non_zero_index = torch::nonzero(image_pred_class.select(1,4)).squeeze();
-        		image_pred_class = image_pred_class.index_select(0, non_zero_index).view({-1,7});
-        	}
-        	
-        	torch::Tensor batch_index = torch::ones({image_pred_class.size(0), 1}).fill_(i);
-
-        	if (!write)
-        	{
-        		output = torch::cat({batch_index, image_pred_class}, 1);
-        		write = true;
-        	}
-        	else
-        	{
-        		auto out = torch::cat({batch_index, image_pred_class}, 1);
-        		output = torch::cat({output,out}, 0);
-        	}
-
-        	num += 1;
-        }
-    }
-
-    if (num == 0)
-    {
-    	return torch::zeros({0});
-    }
-
-    return output;
+	return output;
 }
