@@ -128,6 +128,9 @@ void Darknet::create_modules()
 
 			//在配置文件中，尽管所有的pad都是1，但是对于kernel_sz=1的情况，
 			//pad=1是不合适的，需要置0.
+			//就是说，有两种情况：
+			//ksp(1,1,0) 或者 ksp(3,1,1)
+			//在残差块里面，顺序是：ksp(1,1,0)+ksp(3,1,1)+shortcut(-1,-3)
 			int pad = padding > 0 ? (kernel_size - 1) / 2 : 0;
 			bool with_bias = batch_normalize > 0 ? false : true;
 
